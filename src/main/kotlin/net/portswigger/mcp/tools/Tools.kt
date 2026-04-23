@@ -13,6 +13,8 @@ import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import net.portswigger.mcp.capture.CaptureManager
+import net.portswigger.mcp.capture.isStaticAsset
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.schema.toSerializableForm
 import net.portswigger.mcp.security.HistoryAccessSecurity
@@ -42,7 +44,7 @@ private fun truncateIfNeeded(serialized: String): String {
     }
 }
 
-fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
+fun Server.registerTools(api: MontoyaApi, config: McpConfig, captureManager: CaptureManager? = null) {
 
     mcpTool<SendHttp1Request>("Issues an HTTP/1.1 request and returns the response.") {
         val allowed = runBlocking {
@@ -231,7 +233,19 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
         }
     }
 
-    mcpPaginatedTool<GetProxyHttpHistory>("Displays items within the proxy HTTP history") {
+    mcpTool<GetProxyHttpHistoryCount>("Returns the total number of items in the proxy HTTP history. Use this to know how many requests exist before fetching them.") {
+        val allowed = runBlocking {
+            checkHistoryPermissionOrDeny(HistoryAccessType.HTTP_HISTORY, config, api, "HTTP history count")
+        }
+        if (!allowed) {
+            return@mcpTool "HTTP history access denied by Burp Suite"
+        }
+
+        val total = api.proxy().history().size
+        "Total items in HTTP history: $total"
+    }
+
+    mcpPaginatedTool<GetProxyHttpHistory>("Displays items within the proxy HTTP history. Set reverse=true to get most recent items first.") {
         val allowed = runBlocking {
             checkHistoryPermissionOrDeny(HistoryAccessType.HTTP_HISTORY, config, api, "HTTP history")
         }
@@ -239,7 +253,9 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
             return@mcpPaginatedTool sequenceOf("HTTP history access denied by Burp Suite")
         }
 
-        api.proxy().history().asSequence().map { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
+        val history = api.proxy().history()
+        val ordered = if (reverse) history.asReversed() else history
+        ordered.asSequence().map { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
     }
 
     mcpPaginatedTool<GetProxyHttpHistoryRegex>("Displays items matching a specified regex within the proxy HTTP history") {
@@ -310,6 +326,66 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
         editor.text = text
 
         "Editor text has been set"
+    }
+
+    // Capture session tools
+    if (captureManager != null) {
+        mcpTool<CaptureStart>("Starts a new capture session. All HTTP traffic will be recorded under this session ID until stopped. Use before triggering a browser action to isolate its traffic.") {
+            captureManager.startCapture(sessionId)
+        }
+
+        mcpTool<CaptureStop>("Stops an active capture session. Returns how many requests were captured.") {
+            captureManager.stopCapture(sessionId)
+        }
+
+        mcpTool<CaptureList>("Lists all capture sessions with their status and entry count.") {
+            val sessions = captureManager.listSessions()
+            if (sessions.isEmpty()) {
+                "No capture sessions"
+            } else {
+                sessions.entries.joinToString("\n") { (id, session) ->
+                    val status = if (session.active) "active" else "stopped"
+                    "$id: $status, ${session.entries.size} entries, started=${session.startedAt}${session.stoppedAt?.let { ", stopped=$it" } ?: ""}"
+                }
+            }
+        }
+
+        mcpTool<CaptureGet>("Returns captured HTTP traffic for a specific session. Set excludeStaticAssets=true to filter out JS, CSS, images, fonts. Set entryIndex to get a specific request by its index (as shown in capture_summary).") {
+            val session = captureManager.getCapture(sessionId)
+                ?: return@mcpTool "Capture session '$sessionId' not found"
+
+            if (entryIndex != null) {
+                val entry = session.entries.getOrNull(entryIndex)
+                    ?: return@mcpTool "Entry index $entryIndex not found in session '$sessionId' (${session.entries.size} entries)"
+                return@mcpTool truncateIfNeeded(Json.encodeToString(entry))
+            }
+
+            val entries = if (excludeStaticAssets) session.entries.filter { !isStaticAsset(it) } else session.entries
+            val paginated = entries.drop(offset).take(count)
+
+            if (paginated.isEmpty()) {
+                "Reached end of items"
+            } else {
+                paginated.joinToString("\n\n") { truncateIfNeeded(Json.encodeToString(it)) }
+            }
+        }
+
+        mcpTool<CaptureDelete>("Deletes a capture session and its recorded traffic.") {
+            captureManager.deleteCapture(sessionId)
+        }
+
+        mcpTool<CaptureCount>("Returns the number of entries captured in a session. Use to quickly check how many requests a browser action generated without fetching all the data. Set excludeStaticAssets=true to exclude JS, CSS, images, fonts, etc.") {
+            val session = captureManager.getCapture(sessionId)
+                ?: return@mcpTool "Capture session '$sessionId' not found"
+            val status = if (session.active) "active" else "stopped"
+            val entries = if (excludeStaticAssets) session.entries.filter { !isStaticAsset(it) } else session.entries
+            "Session '$sessionId' ($status): ${entries.size} entries" + if (excludeStaticAssets) " (filtered)" else ""
+        }
+
+        mcpTool<CaptureSummary>("Returns a structured summary of a capture session: endpoints with index, methods, hosts, status codes. No raw data. Use excludeStaticAssets=true to filter noise. Use the #index with capture_get(entryIndex=N) to fetch specific requests.") {
+            captureManager.getCaptureSummary(sessionId, excludeStaticAssets)
+                ?: "Capture session '$sessionId' not found"
+        }
     }
 }
 
@@ -406,7 +482,10 @@ data class SetActiveEditorContents(val text: String)
 data class GetScannerIssues(override val count: Int, override val offset: Int) : Paginated
 
 @Serializable
-data class GetProxyHttpHistory(override val count: Int, override val offset: Int) : Paginated
+data class GetProxyHttpHistoryCount(val placeholder: String? = null)
+
+@Serializable
+data class GetProxyHttpHistory(override val count: Int, override val offset: Int, val reverse: Boolean = false) : Paginated
 
 @Serializable
 data class GetProxyHttpHistoryRegex(val regex: String, override val count: Int, override val offset: Int) : Paginated
@@ -427,3 +506,30 @@ data class GenerateCollaboratorPayload(
 data class GetCollaboratorInteractions(
     val payloadId: String? = null
 )
+
+@Serializable
+data class CaptureStart(val sessionId: String)
+
+@Serializable
+data class CaptureStop(val sessionId: String)
+
+@Serializable
+data class CaptureList(val placeholder: String? = null)
+
+@Serializable
+data class CaptureGet(
+    val sessionId: String,
+    override val count: Int = 10,
+    override val offset: Int = 0,
+    val excludeStaticAssets: Boolean = false,
+    val entryIndex: Int? = null
+) : Paginated
+
+@Serializable
+data class CaptureDelete(val sessionId: String)
+
+@Serializable
+data class CaptureCount(val sessionId: String, val excludeStaticAssets: Boolean = false)
+
+@Serializable
+data class CaptureSummary(val sessionId: String, val excludeStaticAssets: Boolean = false)

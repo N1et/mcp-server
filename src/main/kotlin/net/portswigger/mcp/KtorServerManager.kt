@@ -13,6 +13,7 @@ import io.modelcontextprotocol.kotlin.sdk.ServerCapabilities
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
 import io.modelcontextprotocol.kotlin.sdk.server.mcp
+import net.portswigger.mcp.capture.CaptureManager
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.tools.registerTools
 import java.net.URI
@@ -24,6 +25,7 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
 
     private var server: EmbeddedServer<*, *>? = null
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
+    val captureManager = CaptureManager(api).also { it.register() }
 
     override fun start(config: McpConfig, callback: (ServerState) -> Unit) {
         callback(ServerState.Starting)
@@ -96,7 +98,7 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
                         mcpServer
                     }
 
-                    mcpServer.registerTools(api, config)
+                    mcpServer.registerTools(api, config, captureManager)
                 }.apply {
                     start(wait = false)
                 }

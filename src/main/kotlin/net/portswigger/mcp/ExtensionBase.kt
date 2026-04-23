@@ -2,11 +2,13 @@ package net.portswigger.mcp
 
 import burp.api.montoya.BurpExtension
 import burp.api.montoya.MontoyaApi
+import net.portswigger.mcp.capture.CaptureSessionsPanel
 import net.portswigger.mcp.config.ConfigUi
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.providers.ClaudeDesktopProvider
 import net.portswigger.mcp.providers.ManualProxyInstallerProvider
 import net.portswigger.mcp.providers.ProxyJarManager
+import javax.swing.JTabbedPane
 
 @Suppress("unused")
 class ExtensionBase : BurpExtension {
@@ -26,6 +28,8 @@ class ExtensionBase : BurpExtension {
             )
         )
 
+        val captureSessionsPanel = CaptureSessionsPanel(serverManager.captureManager, api)
+
         configUi.onEnabledToggled { enabled ->
             configUi.getConfig()
 
@@ -40,11 +44,16 @@ class ExtensionBase : BurpExtension {
             }
         }
 
-        api.userInterface().registerSuiteTab("MCP", configUi.component)
+        val tabbedPane = JTabbedPane()
+        tabbedPane.addTab("Configuration", configUi.component)
+        tabbedPane.addTab("Capture Sessions", captureSessionsPanel)
+
+        api.userInterface().registerSuiteTab("MCP", tabbedPane)
 
         api.extension().registerUnloadingHandler {
             serverManager.shutdown()
             configUi.cleanup()
+            captureSessionsPanel.cleanup()
             config.cleanup()
         }
 
