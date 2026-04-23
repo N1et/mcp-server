@@ -70,6 +70,9 @@ The **Capture Sessions** tab appears under the MCP tab in Burp with:
 - Live table updates during active capture
 - Persistence across Burp restarts
 
+<img width="2914" height="1612" alt="image" src="https://github.com/user-attachments/assets/076f98c5-0669-4eb1-b97e-dd8a0c1fd717" />
+
+
 ## Build
 
 ```bash
