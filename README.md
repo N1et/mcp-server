@@ -11,15 +11,15 @@ Ordering Improvements:
 
 Added newestFirst parameter (default: false) to enable reverse chronological browsing in:
 
-`GetProxyHttpHistory` - browse HTTP history newest first
-`GetProxyHttpHistoryRegex` - filter and reverse HTTP history
-`GetProxyWebsocketHistory` - browse WebSocket history newest first
-`GetProxyWebsocketHistoryRegex` - filter and reverse WebSocket history
+- `GetProxyHttpHistory` - browse HTTP history newest first
+- `GetProxyHttpHistoryRegex` - filter and reverse HTTP history
+- `GetProxyWebsocketHistory` - browse WebSocket history newest first
+- `GetProxyWebsocketHistoryRegex` - filter and reverse WebSocket history
 
 New Counting Tools:
 
-`GetProxyHttpHistoryCount` - returns total HTTP history count with optional regex filtering
-`GetProxyWebsocketHistoryCount`  - returns total WebSocket history count with optional regex filtering
+- `GetProxyHttpHistoryCount` - returns total HTTP history count with optional regex filtering
+- `GetProxyWebsocketHistoryCount`  - returns total WebSocket history count with optional regex filtering
 Both tools support permission checks and optional regex patterns for targeted counting
 
 # Capture Sessions
