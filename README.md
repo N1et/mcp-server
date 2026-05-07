@@ -10,9 +10,9 @@ This is an enhanced fork of the original Burp MCP Server that adds:
 
 Instead of digging through entire proxy history, create named sessions that record only traffic from specific test flows.
 
-# New Fork improvements
+## New Fork improvements
 
-## Enhanced history navigation and querying capabilities:
+### Enhanced history navigation and querying capabilities:
 
 Ordering Improvements:
 
@@ -29,11 +29,11 @@ New Counting Tools:
 - `GetProxyWebsocketHistoryCount`  - returns total WebSocket history count with optional regex filtering
 Both tools support permission checks and optional regex patterns for targeted counting
 
-# Capture Sessions
+## Capture Sessions
 
 Isolate HTTP traffic per flow during AI-driven pentest automation. Instead of digging through the entire proxy history, create named sessions that record only the traffic generated during a specific action.
 
-## MCP Functions Example 
+### MCP Functions Example 
 
 ```
 capture_start("login-flow")       # start recording
