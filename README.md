@@ -1,7 +1,14 @@
 # Burp Suite MCP Server Extension +++
 
 ## Overview
-Burp MCP fork with some new functions.
+
+This is an enhanced fork of the original Burp MCP Server that adds:
+
+- **Advanced history browsing** — Reverse chronological ordering and regex-based filtering for HTTP/WebSocket history
+- **History counting tools** — Quick metrics without loading full history
+- **Capture Sessions** — Isolate HTTP traffic per automated flow during AI-driven penetration testing
+
+Instead of digging through entire proxy history, create named sessions that record only traffic from specific test flows.
 
 # New Fork improvements
 
