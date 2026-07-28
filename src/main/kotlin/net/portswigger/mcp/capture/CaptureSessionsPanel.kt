@@ -280,12 +280,13 @@ class CaptureSessionsPanel(private val captureManager: CaptureManager, private v
     }
 
     private fun buildRequestResponsePanel(): JComponent {
-        val tabbedPane = JTabbedPane()
-
-        tabbedPane.addTab("Request", requestEditor.uiComponent())
-        tabbedPane.addTab("Response", responseEditor.uiComponent())
-
-        return tabbedPane
+        return JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
+            requestEditor.uiComponent(),
+            responseEditor.uiComponent()
+        ).apply {
+            resizeWeight = 0.5
+            border = null
+        }
     }
 
     private fun buildStatusBar(): JComponent {
