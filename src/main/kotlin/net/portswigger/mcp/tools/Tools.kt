@@ -14,7 +14,9 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import net.portswigger.mcp.capture.CaptureManager
-import net.portswigger.mcp.capture.isStaticAsset
+import net.portswigger.mcp.capture.CapturedEntry
+import net.portswigger.mcp.capture.CapturedEntryRef
+import net.portswigger.mcp.capture.CapturePolicy
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.schema.toSerializableForm
 import net.portswigger.mcp.security.HistoryAccessSecurity
@@ -42,6 +44,16 @@ private fun truncateIfNeeded(serialized: String): String {
     } else {
         serialized
     }
+}
+
+private fun CaptureManager.readCaptureEntryOrThrow(sessionId: String, index: Int, ref: CapturedEntryRef): CapturedEntry {
+    val entry = try {
+        getCaptureEntry(ref)
+    } catch (_: Exception) {
+        null
+    }
+    return entry
+        ?: error("Payload unavailable for entry $index in session '$sessionId'. Restore the external capture storage from backup.")
 }
 
 fun Server.registerTools(api: MontoyaApi, config: McpConfig, captureManager: CaptureManager? = null) {
@@ -330,8 +342,30 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig, captureManager: Cap
 
     // Capture session tools
     if (captureManager != null) {
-        mcpTool<CaptureStart>("Starts a new capture session. All HTTP traffic will be recorded under this session ID until stopped. Use before triggering a browser action to isolate its traffic.") {
-            captureManager.startCapture(sessionId)
+        mcpTool<CaptureStart>(
+            "Starts or resumes a lightweight capture session. Stored request/response pairs are compressed and " +
+                "deduplicated outside the .burp file; network traffic and capture entries are not deduplicated. " +
+                "Static assets are excluded by default; size, scope, and entry limits are configurable."
+        ) {
+            require(maxRequestBytes in CapturePolicy.MIN_MESSAGE_BYTES..CapturePolicy.MAX_MESSAGE_BYTES) {
+                "maxRequestBytes must be between ${CapturePolicy.MIN_MESSAGE_BYTES} and ${CapturePolicy.MAX_MESSAGE_BYTES}"
+            }
+            require(maxResponseBytes in CapturePolicy.MIN_MESSAGE_BYTES..CapturePolicy.MAX_MESSAGE_BYTES) {
+                "maxResponseBytes must be between ${CapturePolicy.MIN_MESSAGE_BYTES} and ${CapturePolicy.MAX_MESSAGE_BYTES}"
+            }
+            require(maxEntries in 1..CapturePolicy.MAX_ENTRIES) {
+                "maxEntries must be between 1 and ${CapturePolicy.MAX_ENTRIES}"
+            }
+            captureManager.startCapture(
+                sessionId,
+                CapturePolicy(
+                    excludeStaticAssets = excludeStaticAssets,
+                    inScopeOnly = inScopeOnly,
+                    maxRequestBytes = maxRequestBytes,
+                    maxResponseBytes = maxResponseBytes,
+                    maxEntries = maxEntries
+                )
+            )
         }
 
         mcpTool<CaptureStop>("Stops an active capture session. Returns how many requests were captured.") {
@@ -345,28 +379,43 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig, captureManager: Cap
             } else {
                 sessions.entries.joinToString("\n") { (id, session) ->
                     val status = if (session.active) "active" else "stopped"
-                    "$id: $status, ${session.entries.size} entries, started=${session.startedAt}${session.stoppedAt?.let { ", stopped=$it" } ?: ""}"
+                    "$id: $status, ${session.entryCount} entries, filtered=${session.filteredEntries}, " +
+                        "dropped=${session.droppedEntries}, started=${session.startedAt}" +
+                        (session.stoppedAt?.let { ", stopped=$it" } ?: "")
                 }
             }
         }
 
-        mcpTool<CaptureGet>("Returns captured HTTP traffic for a specific session. Set excludeStaticAssets=true to filter out JS, CSS, images, fonts. Set entryIndex to get a specific request by its index (as shown in capture_summary).") {
-            val session = captureManager.getCapture(sessionId)
-                ?: return@mcpTool "Capture session '$sessionId' not found"
+        mcpTool<CaptureGet>("Returns captured HTTP traffic for a specific session (count=1..100, default 10; offset defaults to 0). Set excludeStaticAssets=true to filter out JS, CSS, images, fonts. Set entryIndex to get a specific request by its index (as shown in capture_summary).") {
+            require(count in 1..100) { "count must be between 1 and 100" }
+            require(offset >= 0) { "offset must not be negative" }
+            require(entryIndex == null || entryIndex >= 0) { "entryIndex must not be negative" }
+            val session = requireNotNull(captureManager.getCapture(sessionId)) {
+                "Capture session '$sessionId' not found"
+            }
+            val refs = session.entryRefs()
 
             if (entryIndex != null) {
-                val entry = session.entries.getOrNull(entryIndex)
-                    ?: return@mcpTool "Entry index $entryIndex not found in session '$sessionId' (${session.entries.size} entries)"
+                require(entryIndex < refs.size) {
+                    "Entry index $entryIndex not found in session '$sessionId' (${refs.size} entries)"
+                }
+                val entry = captureManager.readCaptureEntryOrThrow(sessionId, entryIndex, refs[entryIndex])
                 return@mcpTool truncateIfNeeded(Json.encodeToString(entry))
             }
 
-            val entries = if (excludeStaticAssets) session.entries.filter { !isStaticAsset(it) } else session.entries
-            val paginated = entries.drop(offset).take(count)
+            val indices = refs.indices.asSequence()
+                .filter { !excludeStaticAssets || !refs[it].staticAsset }
+                .drop(offset)
+                .take(count)
+                .toList()
 
-            if (paginated.isEmpty()) {
+            if (indices.isEmpty()) {
                 "Reached end of items"
             } else {
-                paginated.joinToString("\n\n") { truncateIfNeeded(Json.encodeToString(it)) }
+                indices.joinToString("\n\n") { index ->
+                    val entry = captureManager.readCaptureEntryOrThrow(sessionId, index, refs[index])
+                    truncateIfNeeded(Json.encodeToString(entry))
+                }
             }
         }
 
@@ -378,13 +427,35 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig, captureManager: Cap
             val session = captureManager.getCapture(sessionId)
                 ?: return@mcpTool "Capture session '$sessionId' not found"
             val status = if (session.active) "active" else "stopped"
-            val entries = if (excludeStaticAssets) session.entries.filter { !isStaticAsset(it) } else session.entries
+            val entries = captureManager.getEntryRefs(sessionId, excludeStaticAssets)
             "Session '$sessionId' ($status): ${entries.size} entries" + if (excludeStaticAssets) " (filtered)" else ""
         }
 
         mcpTool<CaptureSummary>("Returns a structured summary of a capture session: endpoints with index, methods, hosts, status codes. No raw data. Use excludeStaticAssets=true to filter noise. Use the #index with capture_get(entryIndex=N) to fetch specific requests.") {
-            captureManager.getCaptureSummary(sessionId, excludeStaticAssets)
+            captureManager.getCaptureSummary(sessionId, excludeStaticAssets)?.let(::truncateIfNeeded)
                 ?: "Capture session '$sessionId' not found"
+        }
+
+        mcpTool<CaptureStats>("Reports capture counts, byte totals, limits, truncation, and external storage usage without returning request or response payloads.") {
+            if (sessionId != null) {
+                captureManager.getCaptureStats(sessionId)
+                    ?: error("Capture session '$sessionId' not found")
+            } else {
+                val stats = captureManager.storageStats()
+                "Capture store: ${stats.root}\n" +
+                    "Sessions: ${captureManager.listSessions().size} (${stats.sessionFiles} index files)\n" +
+                    "Payload blobs: ${stats.blobFiles} (${stats.referencedBlobs} referenced, ${stats.orphanBlobs} orphaned)\n" +
+                    "Disk bytes: indexes=${stats.indexBytes}, blobs=${stats.blobBytes}, reclaimable=${stats.orphanBytes}"
+            }
+        }
+
+        mcpTool<CaptureStorageCleanup>("Finds or deletes unreferenced compressed payloads. Defaults to dry-run; set dryRun=false only when disk reclamation is needed.") {
+            val result = captureManager.cleanupStorage(dryRun)
+            if (result.dryRun) {
+                "Dry run: ${result.orphanBlobs} orphaned payloads, ${result.reclaimableBytes} bytes reclaimable"
+            } else {
+                "Deleted ${result.deletedBlobs}/${result.orphanBlobs} orphaned payloads; ${result.reclaimableBytes} bytes targeted"
+            }
         }
     }
 }
@@ -508,7 +579,14 @@ data class GetCollaboratorInteractions(
 )
 
 @Serializable
-data class CaptureStart(val sessionId: String)
+data class CaptureStart(
+    val sessionId: String,
+    val excludeStaticAssets: Boolean = true,
+    val inScopeOnly: Boolean = false,
+    val maxRequestBytes: Int = CapturePolicy.DEFAULT_MAX_REQUEST_BYTES,
+    val maxResponseBytes: Int = CapturePolicy.DEFAULT_MAX_RESPONSE_BYTES,
+    val maxEntries: Int = CapturePolicy.DEFAULT_MAX_ENTRIES
+)
 
 @Serializable
 data class CaptureStop(val sessionId: String)
@@ -533,3 +611,9 @@ data class CaptureCount(val sessionId: String, val excludeStaticAssets: Boolean 
 
 @Serializable
 data class CaptureSummary(val sessionId: String, val excludeStaticAssets: Boolean = false)
+
+@Serializable
+data class CaptureStats(val sessionId: String? = null)
+
+@Serializable
+data class CaptureStorageCleanup(val dryRun: Boolean = true)

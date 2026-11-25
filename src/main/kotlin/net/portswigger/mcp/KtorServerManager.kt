@@ -130,11 +130,17 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
     }
 
     override fun shutdown() {
-        server?.stop(1000, 5000)
-        server = null
-
-        executor.shutdown()
-        executor.awaitTermination(10, TimeUnit.SECONDS)
+        try {
+            server?.stop(1000, 5000)
+            server = null
+        } finally {
+            try {
+                captureManager.close()
+            } finally {
+                executor.shutdown()
+                executor.awaitTermination(10, TimeUnit.SECONDS)
+            }
+        }
     }
 
     private fun isValidOrigin(origin: String): Boolean {
