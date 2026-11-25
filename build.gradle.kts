@@ -4,8 +4,8 @@ abstract class EmbedProxyJarTask : DefaultTask() {
     @get:InputFile
     abstract val shadowJarFile: RegularFileProperty
 
-    @get:InputDirectory
-    abstract val projectDir: DirectoryProperty
+    @get:InputFile
+    abstract val proxyJarFile: RegularFileProperty
 
     @get:Inject
     abstract val execOperations: ExecOperations
@@ -13,16 +13,14 @@ abstract class EmbedProxyJarTask : DefaultTask() {
     @TaskAction
     fun embedJar() {
         val shadowJar = shadowJarFile.get().asFile
-        val libsDir = projectDir.dir("libs").get().asFile
-        val proxyJarFile = File(libsDir, "mcp-proxy-all.jar")
+        val proxyJar = proxyJarFile.get().asFile
 
-        if (!proxyJarFile.exists()) {
-            throw GradleException("Proxy JAR not found at: ${proxyJarFile.absolutePath}")
+        if (!proxyJar.exists()) {
+            throw GradleException("Proxy JAR not found at: ${proxyJar.absolutePath}")
         }
 
         execOperations.exec {
-            workingDir(projectDir.get().asFile)
-            commandLine("jar", "uf", shadowJar.absolutePath, "-C", libsDir.absolutePath, proxyJarFile.name)
+            commandLine("jar", "uf", shadowJar.absolutePath, "-C", proxyJar.parentFile.absolutePath, proxyJar.name)
         }
 
         logger.lifecycle("Embedded proxy JAR into ${shadowJar.name}")
@@ -82,6 +80,10 @@ tasks {
     test {
         useJUnitPlatform()
         systemProperty("file.encoding", "UTF-8")
+        systemProperty(
+            "burp.mcp.capture.dir",
+            layout.buildDirectory.dir("test-captures").get().asFile.absolutePath
+        )
 
         testLogging {
             events("passed", "skipped", "failed")
@@ -133,7 +135,7 @@ tasks {
         description = "Embeds the MCP proxy JAR into the shadow JAR"
         dependsOn(shadowJar)
         shadowJarFile.set(shadowJar.flatMap { it.archiveFile })
-        projectDir.set(layout.projectDirectory)
+        proxyJarFile.set(layout.projectDirectory.file("libs/mcp-proxy-all.jar"))
     }
 
     build {

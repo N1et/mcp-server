@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlin.reflect.KClass
 import kotlin.reflect.full.memberProperties
+import kotlin.reflect.full.primaryConstructor
 
 fun getJsonSchemaForProperty(kType: kotlin.reflect.KType): JsonElement {
     return when (kType.classifier) {
@@ -46,12 +47,16 @@ fun getJsonSchemaForProperty(kType: kotlin.reflect.KType): JsonElement {
 
 fun KClass<*>.asInputSchema(): Tool.Input {
     val properties = mutableMapOf<String, JsonElement>()
+    val defaultedParameters = primaryConstructor?.parameters.orEmpty()
+        .filter { it.isOptional }
+        .mapNotNull { it.name }
+        .toSet()
     val required = mutableListOf<String>()
 
     for (prop in memberProperties) {
         properties[prop.name] = getJsonSchemaForProperty(prop.returnType)
 
-        if (!prop.returnType.isMarkedNullable) {
+        if (!prop.returnType.isMarkedNullable && prop.name !in defaultedParameters) {
             required.add(prop.name)
         }
     }

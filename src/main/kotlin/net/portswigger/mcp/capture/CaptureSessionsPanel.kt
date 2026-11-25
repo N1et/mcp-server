@@ -127,10 +127,21 @@ class CaptureSessionsPanel(private val captureManager: CaptureManager, private v
 
     // --- Session actions ---
 
+    private inline fun <T> performCaptureAction(action: () -> T): T? {
+        return try {
+            action()
+        } catch (_: Exception) {
+            val message = "Capture storage operation failed. Check storage availability and permissions before retrying."
+            statusLabel.text = message
+            JOptionPane.showMessageDialog(this, message, "Capture Storage", JOptionPane.ERROR_MESSAGE)
+            null
+        }
+    }
+
     private fun newCaptureSession() {
         val name = JOptionPane.showInputDialog(this, "Session name:", "New Capture Session", JOptionPane.PLAIN_MESSAGE)
         if (name != null && name.isNotBlank()) {
-            captureManager.startCapture(name.trim())
+            performCaptureAction { captureManager.startCapture(name.trim()) } ?: return
             refreshSessions()
         }
     }
@@ -142,7 +153,7 @@ class CaptureSessionsPanel(private val captureManager: CaptureManager, private v
             JOptionPane.showMessageDialog(this, "Session '$sessionId' is already stopped.", "Stop", JOptionPane.INFORMATION_MESSAGE)
             return
         }
-        captureManager.stopCapture(sessionId)
+        performCaptureAction { captureManager.stopCapture(sessionId) } ?: return
         refreshSessions()
         onSessionSelected()
     }
@@ -154,7 +165,7 @@ class CaptureSessionsPanel(private val captureManager: CaptureManager, private v
             JOptionPane.showMessageDialog(this, "Session '$sessionId' is already active.", "Resume", JOptionPane.INFORMATION_MESSAGE)
             return
         }
-        captureManager.startCapture(sessionId)
+        performCaptureAction { captureManager.startCapture(sessionId) } ?: return
         refreshSessions()
         onSessionSelected()
     }
@@ -169,7 +180,7 @@ class CaptureSessionsPanel(private val captureManager: CaptureManager, private v
             JOptionPane.WARNING_MESSAGE
         )
         if (confirm == JOptionPane.YES_OPTION) {
-            captureManager.deleteCapture(sessionId)
+            performCaptureAction { captureManager.deleteCapture(sessionId) } ?: return
             currentSessionId = null
             requestTableModel.setEntries(emptyList())
             statusLabel.text = "No session selected"
@@ -183,7 +194,20 @@ class CaptureSessionsPanel(private val captureManager: CaptureManager, private v
         val row = requestTable.selectedRow
         if (row < 0) return null
         val modelRow = requestTable.convertRowIndexToModel(row)
-        return requestTableModel.getEntry(modelRow)
+        return readEntry(modelRow)
+    }
+
+    private fun readEntry(index: Int): CapturedEntry? {
+        val ref = requestTableModel.getEntry(index) ?: return null
+        val entry = try {
+            captureManager.getCaptureEntry(ref)
+        } catch (_: Exception) {
+            null
+        }
+        if (entry == null) {
+            statusLabel.text = "Payload unavailable for entry $index. Restore the external capture storage from backup."
+        }
+        return entry
     }
 
     private fun buildHttpRequest(entry: CapturedEntry): HttpRequest {
@@ -195,7 +219,9 @@ class CaptureSessionsPanel(private val captureManager: CaptureManager, private v
 
     private fun sendToRepeater() {
         val entry = getSelectedEntry() ?: run {
-            JOptionPane.showMessageDialog(this, "Select a request first.", "Send to Repeater", JOptionPane.WARNING_MESSAGE)
+            if (requestTable.selectedRow < 0) {
+                JOptionPane.showMessageDialog(this, "Select a request first.", "Send to Repeater", JOptionPane.WARNING_MESSAGE)
+            }
             return
         }
         try {
@@ -204,13 +230,15 @@ class CaptureSessionsPanel(private val captureManager: CaptureManager, private v
             api.repeater().sendToRepeater(request, tabName)
             api.logging().logToOutput("Sent ${entry.method} ${entry.path} to Repeater")
         } catch (e: Exception) {
-            JOptionPane.showMessageDialog(this, "Error: ${e.message}", "Send to Repeater", JOptionPane.ERROR_MESSAGE)
+            JOptionPane.showMessageDialog(this, "Unable to send the selected capture to Repeater.", "Send to Repeater", JOptionPane.ERROR_MESSAGE)
         }
     }
 
     private fun sendToIntruder() {
         val entry = getSelectedEntry() ?: run {
-            JOptionPane.showMessageDialog(this, "Select a request first.", "Send to Intruder", JOptionPane.WARNING_MESSAGE)
+            if (requestTable.selectedRow < 0) {
+                JOptionPane.showMessageDialog(this, "Select a request first.", "Send to Intruder", JOptionPane.WARNING_MESSAGE)
+            }
             return
         }
         try {
@@ -218,7 +246,7 @@ class CaptureSessionsPanel(private val captureManager: CaptureManager, private v
             api.intruder().sendToIntruder(request)
             api.logging().logToOutput("Sent ${entry.method} ${entry.path} to Intruder")
         } catch (e: Exception) {
-            JOptionPane.showMessageDialog(this, "Error: ${e.message}", "Send to Intruder", JOptionPane.ERROR_MESSAGE)
+            JOptionPane.showMessageDialog(this, "Unable to send the selected capture to Intruder.", "Send to Intruder", JOptionPane.ERROR_MESSAGE)
         }
     }
 
@@ -229,11 +257,10 @@ class CaptureSessionsPanel(private val captureManager: CaptureManager, private v
         val sessionId = currentSessionId ?: return
         val session = captureManager.getCapture(sessionId) ?: return
 
-        if (modelRow < session.entries.size) {
-            session.entries.removeAt(modelRow)
-            requestTableModel.setEntries(session.entries)
+        if (performCaptureAction { captureManager.deleteCaptureEntry(sessionId, modelRow) } == true) {
+            requestTableModel.setEntries(captureManager.getEntryRefs(sessionId))
             val status = if (session.active) "ACTIVE" else "STOPPED"
-            statusLabel.text = "Session: $sessionId | Status: $status | Entries: ${session.entries.size}"
+            statusLabel.text = "Session: $sessionId | Status: $status | Entries: ${session.entryCount}"
             sessionList.repaint()
         }
     }
@@ -309,11 +336,11 @@ class CaptureSessionsPanel(private val captureManager: CaptureManager, private v
                 val session = captureManager.getCapture(currentSessionId!!)
                 if (session != null) {
                     val status = if (session.active) "ACTIVE" else "STOPPED"
-                    statusLabel.text = "Session: $currentSessionId | Status: $status | Entries: ${session.entries.size}"
+                    statusLabel.text = "Session: $currentSessionId | Status: $status | Entries: ${session.entryCount}"
                     // Live update table if session is active and has new entries
-                    if (session.active && session.entries.size != requestTableModel.rowCount) {
+                    if (session.active && session.entryCount != requestTableModel.rowCount) {
                         val selectedRow = requestTable.selectedRow
-                        requestTableModel.setEntries(session.entries)
+                        requestTableModel.setEntries(captureManager.getEntryRefs(currentSessionId!!))
                         if (selectedRow in 0 until requestTableModel.rowCount) {
                             requestTable.setRowSelectionInterval(selectedRow, selectedRow)
                         }
@@ -340,15 +367,17 @@ class CaptureSessionsPanel(private val captureManager: CaptureManager, private v
 
         currentSessionId = sessionId
         currentSelectedRow = -1
-        requestTableModel.setEntries(session.entries)
+        requestTableModel.setEntries(captureManager.getEntryRefs(sessionId))
 
         val status = if (session.active) "ACTIVE" else "STOPPED"
-        statusLabel.text = "Session: $sessionId | Status: $status | Entries: ${session.entries.size}"
+        statusLabel.text = "Session: $sessionId | Status: $status | Entries: ${session.entryCount}"
     }
 
     private fun onRequestSelected(row: Int) {
         currentSelectedRow = row
-        val entry = requestTableModel.getEntry(row) ?: return
+        requestEditor.setRequest(null)
+        responseEditor.setResponse(null)
+        val entry = readEntry(row) ?: return
 
         try {
             val httpRequest = HttpRequest.httpRequest(entry.request)
@@ -371,15 +400,15 @@ class CaptureSessionsPanel(private val captureManager: CaptureManager, private v
 
     inner class RequestTableModel : AbstractTableModel() {
         private val columns = arrayOf("#", "Host", "Method", "URL", "Status", "Time")
-        private var entries = listOf<CapturedEntry>()
+        private var entries = listOf<CapturedEntryRef>()
         private val dateFormat = SimpleDateFormat("HH:mm:ss.SSS")
 
-        fun setEntries(newEntries: List<CapturedEntry>) {
+        fun setEntries(newEntries: List<CapturedEntryRef>) {
             entries = newEntries.toList()
             fireTableDataChanged()
         }
 
-        fun getEntry(row: Int): CapturedEntry? = entries.getOrNull(row)
+        fun getEntry(row: Int): CapturedEntryRef? = entries.getOrNull(row)
 
         override fun getRowCount() = entries.size
         override fun getColumnCount() = columns.size
@@ -417,7 +446,7 @@ class CaptureSessionsPanel(private val captureManager: CaptureManager, private v
 
             if (session != null) {
                 val status = if (session.active) "\u25CF" else "\u25CB"
-                val count = session.entries.size
+                val count = session.entryCount
                 text = "$status $sessionId ($count)"
             }
 

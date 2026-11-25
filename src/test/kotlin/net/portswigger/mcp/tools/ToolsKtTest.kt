@@ -154,7 +154,7 @@ class ToolsKtTest {
     @AfterEach
     fun tearDown() {
         runBlocking { if (client.isConnected()) client.close() }
-        serverManager.stop {}
+        serverManager.shutdown()
     }
 
     @Nested
